@@ -1,0 +1,64 @@
+services:
+  web:
+    image: node:22-alpine
+    working_dir: /workspace/apps/web
+    volumes:
+      - ../:/workspace
+    environment:
+      - CI=true
+      - NODE_ENV=development
+      - AGNO_API_URL=http://agno-api:8001
+    command: sh -c "corepack enable && pnpm install && pnpm dev -p 3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - agno-api
+
+  agno-api:
+    image: python:3.12-slim
+    working_dir: /workspace/services/agno_api
+    volumes:
+      - ../:/workspace
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AGNO_API_HOST=0.0.0.0
+      - AGNO_API_PORT=8001
+      - POCKETBASE_URL=http://pocketbase:8090
+      - APP_STORAGE_DIR=/workspace/.tmp/agno-api
+      - OPENROUTER_MODEL=openai/gpt-4o-mini
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    command: sh -c "pip install -e . && uvicorn app.main:app --host 0.0.0.0 --port 8001"
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+      - pocketbase
+
+  agno-worker:
+    image: python:3.12-slim
+    working_dir: /workspace/services/agno_api
+    volumes:
+      - ../:/workspace
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - APP_STORAGE_DIR=/workspace/.tmp/agno-api
+    command: sh -c "pip install -e . && rq worker recon --url redis://redis:6379/0"
+    depends_on:
+      - redis
+      - agno-api
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  pocketbase:
+    image: ghcr.io/muchobien/pocketbase:latest
+    command: ["--http=0.0.0.0:8090", "--dir=/pb_data"]
+    volumes:
+      - pocketbase_data:/pb_data
+    ports:
+      - "8090:8090"
+
+volumes:
+  pocketbase_data:

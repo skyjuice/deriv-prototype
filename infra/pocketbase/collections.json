@@ -1,0 +1,12 @@
+[
+  {"name":"reconciliation_runs","type":"base"},
+  {"name":"source_files","type":"base"},
+  {"name":"transactions_normalized","type":"base"},
+  {"name":"match_results","type":"base"},
+  {"name":"exceptions","type":"base"},
+  {"name":"ai_reviews","type":"base"},
+  {"name":"ai_feedback","type":"base"},
+  {"name":"announcements","type":"base"},
+  {"name":"audit_events","type":"base"},
+  {"name":"recon_rules","type":"base"}
+]
