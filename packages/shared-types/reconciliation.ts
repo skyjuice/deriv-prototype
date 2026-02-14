@@ -171,14 +171,26 @@ export interface DailyOpsSummary {
 export interface MonthlyCloseBatch {
   month: string;
   sourceRunIds: string[];
+  sourceRuns: MonthlyCloseSourceRun[];
   sourceRunCount: number;
   totalTransactions: number;
   goodTransactions: number;
   doubtfulTransactions: number;
+  doubtfulNotificationRequired: number;
+  doubtfulNotificationSent: number;
   readyForErp: boolean;
   journalCreated: boolean;
   submittedToErp: boolean;
   nextAction: string;
   journalCreatedAt?: string | null;
   submittedAt?: string | null;
+}
+
+export interface MonthlyCloseSourceRun {
+  runId: string;
+  runNumber: string;
+  businessDate: string;
+  closeState: string;
+  doubtfulTransactions: number;
+  notifiedToSource: boolean;
 }

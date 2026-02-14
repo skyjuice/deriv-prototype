@@ -19,6 +19,7 @@ from .schemas import (
     ExceptionCase,
     MatchDecision,
     MonthlyCloseBatch,
+    MonthlyCloseSourceRun,
     MonthlyAlertRecipient,
     MonthlyDoubtfulDetail,
     MonthlySubmissionSummary,
@@ -31,14 +32,14 @@ from .schemas import (
 RECIPIENT_LABELS = {
     "psp_provider": "PSP Provider",
     "internal_backoffice": "Internal Backoffice",
-    "cashier_erp": "Cashier (ERP)",
+    "cashier_erp": "Backoffice",
     "reconciliation_ops": "Reconciliation Ops",
 }
 
 RECIPIENT_REASONS = {
-    "psp_provider": "Missing or inconsistent PSP statement entry.",
+    "psp_provider": "Doubtful transaction requires PSP clarification/details.",
     "internal_backoffice": "Missing or inconsistent internal backoffice record.",
-    "cashier_erp": "Missing or inconsistent ERP/cashier record.",
+    "cashier_erp": "Missing or inconsistent backoffice record.",
     "reconciliation_ops": "General reconciliation mismatch requiring review.",
 }
 
@@ -209,7 +210,8 @@ class Storage:
         return stats, refs_by_month
 
     def _derive_alert_recipients(self, missing_sources: list[str], reason_codes: list[str]) -> list[str]:
-        recipients: set[str] = set()
+        # Product rule: every doubtful transaction requires PSP notification for details.
+        recipients: set[str] = {"psp_provider"}
         if "psp" in missing_sources:
             recipients.add("psp_provider")
         if "internal" in missing_sources:
@@ -656,17 +658,34 @@ class Storage:
                     month,
                     {
                         "source_run_ids": set(),
+                        "source_runs": [],
                         "total_transactions": 0,
                         "good_transactions": 0,
                         "doubtful_transactions": 0,
                         "unresolved_doubtful": 0,
+                        "doubtful_notification_required": 0,
+                        "doubtful_notification_sent": 0,
                     },
                 )
                 bucket["source_run_ids"].add(run.id)
+                bucket["source_runs"].append(
+                    MonthlyCloseSourceRun(
+                        run_id=run.id,
+                        run_number=f"RUN-{run.id[:8].upper()}",
+                        business_date=daily.business_date,
+                        close_state=daily.close_state,
+                        doubtful_transactions=month_item.doubtful_transactions,
+                        notified_to_source=month_item.notified_to_source,
+                    )
+                )
                 bucket["total_transactions"] += month_item.total_transactions
                 bucket["good_transactions"] += month_item.good_transactions
                 bucket["doubtful_transactions"] += month_item.doubtful_transactions
                 bucket["unresolved_doubtful"] += month_item.unresolved_doubtful
+                if month_item.doubtful_transactions > 0:
+                    bucket["doubtful_notification_required"] += 1
+                    if month_item.notified_to_source:
+                        bucket["doubtful_notification_sent"] += 1
 
         months = sorted(set(aggregates.keys()) | set(data["monthly_close"].keys()))
         out: list[MonthlyCloseBatch] = []
@@ -676,15 +695,23 @@ class Storage:
                 month,
                 {
                     "source_run_ids": set(),
+                    "source_runs": [],
                     "total_transactions": 0,
                     "good_transactions": 0,
                     "doubtful_transactions": 0,
                     "unresolved_doubtful": 0,
+                    "doubtful_notification_required": 0,
+                    "doubtful_notification_sent": 0,
                 },
             )
             source_run_ids = sorted(bucket["source_run_ids"])
             source_run_count = len(source_run_ids)
-            ready_for_erp = source_run_count > 0 and bucket["unresolved_doubtful"] == 0
+            source_runs = sorted(bucket["source_runs"], key=lambda item: (item.business_date, item.run_id))
+            ready_for_erp = (
+                source_run_count > 0
+                and bucket["unresolved_doubtful"] == 0
+                and bucket["doubtful_notification_sent"] >= bucket["doubtful_notification_required"]
+            )
             journal_created = bool(state.get("journal_created", False))
             submitted_to_erp = bool(state.get("submitted_to_erp", False))
             if submitted_to_erp:
@@ -700,10 +727,13 @@ class Storage:
                 MonthlyCloseBatch(
                     month=month,
                     source_run_ids=source_run_ids,
+                    source_runs=source_runs,
                     source_run_count=source_run_count,
                     total_transactions=bucket["total_transactions"],
                     good_transactions=bucket["good_transactions"],
                     doubtful_transactions=bucket["doubtful_transactions"],
+                    doubtful_notification_required=bucket["doubtful_notification_required"],
+                    doubtful_notification_sent=bucket["doubtful_notification_sent"],
                     ready_for_erp=ready_for_erp,
                     journal_created=journal_created,
                     submitted_to_erp=submitted_to_erp,
@@ -736,7 +766,7 @@ class Storage:
         if batch is None:
             raise KeyError(month)
         if not batch.ready_for_erp:
-            raise ValueError("monthly close is not ready; close all daily runs and clear doubtfuls first")
+            raise ValueError("monthly close is not ready; clear unresolved doubtfuls and send PSP notifications first")
         if batch.good_transactions <= 0:
             raise ValueError("no good transactions available to create journal")
 
@@ -758,7 +788,7 @@ class Storage:
         if batch is None:
             raise KeyError(month)
         if not batch.ready_for_erp:
-            raise ValueError("monthly close is not ready; close all daily runs and clear doubtfuls first")
+            raise ValueError("monthly close is not ready; clear unresolved doubtfuls and send PSP notifications first")
 
         state = self._ensure_monthly_close_state(data, month)
         if batch.good_transactions > 0 and not bool(state.get("journal_created", False)):

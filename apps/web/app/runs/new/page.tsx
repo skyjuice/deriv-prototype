@@ -5,8 +5,12 @@ import { useState } from "react";
 import { PageShell } from "@/components/recon/page-shell";
 
 const SOURCES = ["internal", "erp", "psp"] as const;
-
 type SourceType = (typeof SOURCES)[number];
+const SOURCE_LABELS: Record<SourceType, string> = {
+  internal: "Internal",
+  erp: "Backoffice",
+  psp: "PSP",
+};
 
 export default function NewRunPage() {
   const [runId, setRunId] = useState<string>("");
@@ -32,7 +36,7 @@ export default function NewRunPage() {
   const upload = async (currentRun: string, sourceType: SourceType) => {
     const file = files[sourceType];
     if (!file) {
-      throw new Error(`Missing required file: ${sourceType}`);
+      throw new Error(`Missing required file: ${SOURCE_LABELS[sourceType]}`);
     }
 
     const formData = new FormData();
@@ -42,7 +46,7 @@ export default function NewRunPage() {
       body: formData,
     });
     if (!response.ok) {
-      throw new Error(`Failed upload for ${sourceType}`);
+      throw new Error(`Failed upload for ${SOURCE_LABELS[sourceType]}`);
     }
   };
 
@@ -50,7 +54,7 @@ export default function NewRunPage() {
     try {
       const missing = SOURCES.filter((source) => !files[source]);
       if (missing.length > 0) {
-        setStatus(`Missing required file(s): ${missing.join(", ")}`);
+        setStatus(`Missing required file(s): ${missing.map((source) => SOURCE_LABELS[source]).join(", ")}`);
         return;
       }
 
@@ -80,7 +84,7 @@ export default function NewRunPage() {
       setStatus(payload.error || "Failed remote fetch");
       return;
     }
-    setStatus(`Remote file attached for ${urlSource}`);
+    setStatus(`Remote file attached for ${SOURCE_LABELS[urlSource]}`);
   };
 
   return (
@@ -88,11 +92,11 @@ export default function NewRunPage() {
       <section className="grid gap-4 lg:grid-cols-2">
         <article className="rounded-xl border bg-card p-4">
           <h2 className="font-medium">Manual upload (required)</h2>
-          <p className="mb-4 text-sm text-muted-foreground">Attach Internal, ERP, and PSP files.</p>
+          <p className="mb-4 text-sm text-muted-foreground">Attach Internal, Backoffice, and PSP files.</p>
           <div className="space-y-3">
             {SOURCES.map((source) => (
               <label key={source} className="block rounded-lg border p-3 text-sm">
-                <span className="mb-2 block capitalize">{source}</span>
+                <span className="mb-2 block">{SOURCE_LABELS[source]}</span>
                 <input type="file" onChange={(event) => setFiles((prev) => ({ ...prev, [source]: event.target.files?.[0] }))} />
               </label>
             ))}
@@ -108,7 +112,7 @@ export default function NewRunPage() {
           <div className="space-y-3">
             <select className="w-full rounded-lg border px-3 py-2 text-sm" value={urlSource} onChange={(e) => setUrlSource(e.target.value as SourceType)}>
               {SOURCES.map((source) => (
-                <option value={source} key={source}>{source}</option>
+                <option value={source} key={source}>{SOURCE_LABELS[source]}</option>
               ))}
             </select>
             <input value={url} onChange={(e) => setUrl(e.target.value)} className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="https://example.com/statement.csv" />

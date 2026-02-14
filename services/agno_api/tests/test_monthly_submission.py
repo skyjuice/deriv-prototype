@@ -33,9 +33,9 @@ def test_monthly_submission_lifecycle() -> None:
                     transaction_month="2024-01",
                     trace_json={
                         "sources_present": {
-                            "internal": True,
+                            "internal": False,
                             "erp": True,
-                            "psp": False,
+                            "psp": True,
                         }
                     },
                 ),
@@ -62,11 +62,10 @@ def test_monthly_submission_lifecycle() -> None:
             assert initial.unresolved_doubtful == 1
             assert initial.ready_for_submission is False
             assert initial.next_action == "address_doubtful"
-            assert len(initial.alert_recipients) == 1
-            assert initial.alert_recipients[0].recipient_key == "psp_provider"
-            assert initial.alert_recipients[0].merchant_refs == ["MONTH-002"]
+            keys = sorted([item.recipient_key for item in initial.alert_recipients])
+            assert keys == ["internal_backoffice", "psp_provider"]
             assert len(initial.doubtful_details) == 1
-            assert initial.doubtful_details[0].missing_sources == ["psp"]
+            assert initial.doubtful_details[0].missing_sources == ["internal"]
 
             addressed = storage.address_monthly_doubtful(run.id, "2024-01", actor="analyst")
             assert addressed.unresolved_doubtful == 0

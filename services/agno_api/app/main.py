@@ -208,7 +208,7 @@ def notify_daily_ops(run_id: str) -> DailyOpsSummary:
             run_id,
             "doubtful",
             "Daily notification batch sent",
-            "Notifications were sent to PSP/backoffice/ERP counterparties for non-tally items.",
+            "Notifications were sent to PSP and backoffice counterparties for non-tally items.",
             {
                 "run_id": run_id,
                 "notifications_required": summary.notifications_required,

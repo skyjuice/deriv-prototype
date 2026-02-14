@@ -36,7 +36,7 @@ function actionIcon(action: ActionName) {
 function labelFromRecipient(recipient: string) {
   if (recipient === "psp_provider") return "PSP Provider";
   if (recipient === "internal_backoffice") return "Internal Backoffice";
-  if (recipient === "cashier_erp") return "Cashier (ERP)";
+  if (recipient === "cashier_erp") return "Backoffice";
   return "Reconciliation Ops";
 }
 

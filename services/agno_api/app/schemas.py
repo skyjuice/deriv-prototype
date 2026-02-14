@@ -184,13 +184,25 @@ class DailyOpsSummary(BaseModel):
     monthly_items: list[MonthlySubmissionSummary] = Field(default_factory=list)
 
 
+class MonthlyCloseSourceRun(BaseModel):
+    run_id: str
+    run_number: str
+    business_date: str
+    close_state: str
+    doubtful_transactions: int = 0
+    notified_to_source: bool = False
+
+
 class MonthlyCloseBatch(BaseModel):
     month: str
     source_run_ids: list[str] = Field(default_factory=list)
+    source_runs: list[MonthlyCloseSourceRun] = Field(default_factory=list)
     source_run_count: int = 0
     total_transactions: int = 0
     good_transactions: int = 0
     doubtful_transactions: int = 0
+    doubtful_notification_required: int = 0
+    doubtful_notification_sent: int = 0
     ready_for_erp: bool = False
     journal_created: bool = False
     submitted_to_erp: bool = False

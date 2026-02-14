@@ -18,6 +18,26 @@ function stateClass(item: MonthlyCloseBatch) {
   return "bg-rose-100 text-rose-700";
 }
 
+function sourceRunClass(doubtfulTransactions: number, notifiedToSource: boolean) {
+  if (doubtfulTransactions <= 0) {
+    return "border-emerald-300 bg-emerald-50 text-emerald-700";
+  }
+  if (notifiedToSource) {
+    return "border-amber-300 bg-amber-50 text-amber-700";
+  }
+  return "border-rose-300 bg-rose-50 text-rose-700";
+}
+
+function sourceRunStatusText(doubtfulTransactions: number, notifiedToSource: boolean) {
+  if (doubtfulTransactions <= 0) {
+    return "No issues";
+  }
+  if (notifiedToSource) {
+    return "Issue handled";
+  }
+  return "Issue pending";
+}
+
 export function MonthlyCloseBoard({ items }: Props) {
   const router = useRouter();
   const [pendingKey, setPendingKey] = useState<string | null>(null);
@@ -57,7 +77,12 @@ export function MonthlyCloseBoard({ items }: Props) {
         {items.length === 0 ? <p className="text-sm text-muted-foreground">No monthly batches available yet. Close daily runs first.</p> : null}
         {items.map((item) => {
           const canJournal = item.ready_for_erp && !item.journal_created && !item.submitted_to_erp && item.good_transactions > 0;
-          const canSubmit = item.ready_for_erp && !item.submitted_to_erp && (item.good_transactions === 0 || item.journal_created);
+          const notificationsReady = item.doubtful_notification_sent >= item.doubtful_notification_required;
+          const canSubmit =
+            item.ready_for_erp &&
+            notificationsReady &&
+            !item.submitted_to_erp &&
+            (item.good_transactions === 0 || item.journal_created);
           return (
             <article key={item.month} className="rounded-lg border p-3">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -65,21 +90,27 @@ export function MonthlyCloseBoard({ items }: Props) {
                 <span className={`rounded-full px-2 py-1 text-[11px] ${stateClass(item)}`}>{item.next_action}</span>
               </div>
 
-              <div className="mb-3 grid gap-2 text-xs md:grid-cols-5">
+              <div className="mb-3 grid gap-2 text-xs md:grid-cols-6">
                 <div className="rounded border p-2"><p className="text-muted-foreground">Closed Runs</p><p className="font-medium">{item.source_run_count}</p></div>
                 <div className="rounded border p-2"><p className="text-muted-foreground">Total Txn</p><p className="font-medium">{item.total_transactions}</p></div>
                 <div className="rounded border p-2"><p className="text-muted-foreground">Good</p><p className="font-medium text-emerald-700">{item.good_transactions}</p></div>
                 <div className="rounded border p-2"><p className="text-muted-foreground">Doubtful</p><p className="font-medium text-rose-700">{item.doubtful_transactions}</p></div>
+                <div className="rounded border p-2"><p className="text-muted-foreground">PSP Notified</p><p className="font-medium">{item.doubtful_notification_sent}/{item.doubtful_notification_required}</p></div>
                 <div className="rounded border p-2"><p className="text-muted-foreground">Ready</p><p className="font-medium">{item.ready_for_erp ? "yes" : "no"}</p></div>
               </div>
 
               <details className="mb-3 rounded border bg-muted/20 p-2 text-xs">
-                <summary className="cursor-pointer font-medium">Source Runs ({item.source_run_ids.length})</summary>
+                <summary className="cursor-pointer font-medium">Source Runs ({item.source_runs.length})</summary>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {item.source_run_ids.length === 0 ? <span className="text-muted-foreground">No closed runs yet.</span> : null}
-                  {item.source_run_ids.map((runId) => (
-                    <Link key={`${item.month}-${runId}`} href={`/runs/${runId}`} className="rounded border px-2 py-1 font-mono">
-                      {runId.slice(0, 8)}
+                  {item.source_runs.length === 0 ? <span className="text-muted-foreground">No closed runs yet.</span> : null}
+                  {item.source_runs.map((sourceRun) => (
+                    <Link
+                      key={`${item.month}-${sourceRun.run_id}`}
+                      href={`/runs/${sourceRun.run_id}`}
+                      className={`rounded border px-2 py-1 ${sourceRunClass(sourceRun.doubtful_transactions, sourceRun.notified_to_source)}`}
+                    >
+                      <span className="font-mono">{sourceRun.run_number}</span> • {sourceRun.business_date} •{" "}
+                      {sourceRunStatusText(sourceRun.doubtful_transactions, sourceRun.notified_to_source)}
                     </Link>
                   ))}
                 </div>
@@ -103,6 +134,11 @@ export function MonthlyCloseBoard({ items }: Props) {
               </div>
 
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                {item.doubtful_notification_required > 0 && !notificationsReady ? (
+                  <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700">
+                    Send PSP notification before ERP submission
+                  </span>
+                ) : null}
                 {item.journal_created_at ? <span className="rounded border px-2 py-0.5">Journal: {item.journal_created_at}</span> : null}
                 {item.submitted_at ? <span className="rounded border px-2 py-0.5">Submitted: {item.submitted_at}</span> : null}
               </div>

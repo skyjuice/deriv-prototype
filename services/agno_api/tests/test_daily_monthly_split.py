@@ -78,8 +78,13 @@ def test_daily_and_monthly_close_segregation() -> None:
             assert monthly.source_run_count == 1
             assert monthly.total_transactions == 2
             assert monthly.doubtful_transactions == 1
+            assert monthly.doubtful_notification_required == 1
+            assert monthly.doubtful_notification_sent == 1
             assert monthly.ready_for_erp is True
             assert monthly.next_action == "create_journal"
+            assert len(monthly.source_runs) == 1
+            assert monthly.source_runs[0].business_date == "2026-02-03"
+            assert monthly.source_runs[0].run_number.startswith("RUN-")
 
             journaled = storage.create_monthly_close_journal("2026-03", actor="supervisor")
             assert journaled.journal_created is True
