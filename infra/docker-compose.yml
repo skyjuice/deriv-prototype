@@ -19,6 +19,9 @@ services:
     working_dir: /workspace/services/agno_api
     volumes:
       - ../:/workspace
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       - REDIS_URL=redis://redis:6379/0
       - AGNO_API_HOST=0.0.0.0
@@ -26,7 +29,6 @@ services:
       - POCKETBASE_URL=http://pocketbase:8090
       - APP_STORAGE_DIR=/workspace/.tmp/agno-api
       - OPENROUTER_MODEL=openai/gpt-4o-mini
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     command: sh -c "pip install -e . && uvicorn app.main:app --host 0.0.0.0 --port 8001"
     ports:
       - "8001:8001"

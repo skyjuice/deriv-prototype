@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from .auto_download import run_download
 from .schemas import AnnouncementItem, DailyOpsSummary, MonthlyCloseBatch, ReconcileJobRequest, ReconciliationRun, RunSummary, SourceType
 from .service import execute_reconciliation, queue_reconciliation
 from .storage import storage
@@ -36,6 +38,11 @@ class RemoteFetchRequest(BaseModel):
     url: str
 
 
+class AutoDownloadRequest(BaseModel):
+    source_type: SourceType = SourceType.PSP
+    task: str | None = None
+
+
 class FeedbackRequest(BaseModel):
     user_id: str = "analyst"
     stage: str = "supervisor"
@@ -47,6 +54,17 @@ class FeedbackRequest(BaseModel):
 
 class DailyBusinessDateRequest(BaseModel):
     business_date: str
+
+
+class ChatHistoryTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatQueryRequest(BaseModel):
+    question: str
+    run_id: str | None = None
+    history: list[ChatHistoryTurn] = Field(default_factory=list)
 
 
 def _announce_monthly_action(run_id: str, level: str, title: str, message: str, payload: dict[str, Any]) -> None:
@@ -103,6 +121,37 @@ async def fetch_remote_file(run_id: str, body: RemoteFetchRequest) -> dict[str, 
     return {"file": rec.model_dump(mode="json")}
 
 
+@app.post("/v1/runs/{run_id}/auto-download")
+async def auto_download_run_file(run_id: str, body: AutoDownloadRequest) -> dict[str, Any]:
+    try:
+        storage.get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+
+    try:
+        downloaded_path = await run_download(task=body.task)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"auto download failed: {exc}") from exc
+
+    if not downloaded_path:
+        raise HTTPException(status_code=400, detail="auto download did not produce a file")
+
+    local_path = Path(downloaded_path)
+    if not local_path.exists() or not local_path.is_file():
+        raise HTTPException(status_code=400, detail=f"downloaded file not found: {downloaded_path}")
+
+    payload = local_path.read_bytes()
+    rec = storage.save_source_file(
+        run_id=run_id,
+        source_type=body.source_type,
+        filename=local_path.name,
+        payload=payload,
+    )
+    return {"file": rec.model_dump(mode="json"), "downloaded_path": downloaded_path}
+
+
 @app.post("/v1/jobs/reconcile")
 def enqueue_reconcile_job(payload: ReconcileJobRequest) -> dict[str, str]:
     try:
@@ -157,6 +206,14 @@ def get_job_summary(run_id: str) -> RunSummary:
     except KeyError:
         daily_ops = None
     return RunSummary(run=run, decisions=decisions, exceptions=exceptions, monthly_submissions=monthly_submissions, daily_ops=daily_ops)
+
+
+@app.get("/v1/runs/{run_id}/transactions/{merchant_ref}")
+def get_run_transaction_source_snapshot(run_id: str, merchant_ref: str) -> dict[str, Any]:
+    try:
+        return storage.get_transaction_source_snapshot(run_id=run_id, merchant_ref=merchant_ref)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
 
 
 @app.get("/v1/daily-ops")
@@ -282,6 +339,24 @@ def submit_monthly_close(month: str) -> MonthlyCloseBatch:
             "Monthly close submitted to ERP",
             f"{month}: consolidated monthly batch submitted to ERP.",
             {"month": month, "source_run_ids": batch.source_run_ids, "submitted_to_erp": batch.submitted_to_erp},
+        )
+        return batch
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="monthly batch not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/monthly-close/{month}/revert", response_model=MonthlyCloseBatch)
+def revert_monthly_close_submission(month: str) -> MonthlyCloseBatch:
+    try:
+        batch = storage.revert_monthly_close_submission(month, actor="admin")
+        _announce_monthly_action(
+            "monthly-close",
+            "doubtful",
+            "Monthly close submission reverted",
+            f"{month}: ERP submission was reverted and returned to journal creation stage.",
+            {"month": month, "next_action": batch.next_action},
         )
         return batch
     except KeyError as exc:
@@ -434,3 +509,28 @@ def feedback_metrics() -> dict[str, Any]:
 def list_inbox() -> dict[str, Any]:
     items = storage.list_announcements()
     return {"items": [i.model_dump(mode="json") for i in sorted(items, key=lambda x: x.id, reverse=True)]}
+
+
+@app.post("/v1/chat/query")
+async def query_chat(body: ChatQueryRequest) -> dict[str, Any]:
+    from .ai import answer_data_question
+
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    if body.run_id:
+        try:
+            storage.get_run(body.run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+
+    context = storage.build_chat_context(run_id=body.run_id)
+    history = [item.model_dump(mode="json") for item in body.history]
+    reply = await answer_data_question(question, context, history=history)
+    return {
+        "answer": reply.get("answer", ""),
+        "source": reply.get("source", "fallback"),
+        "model": reply.get("model"),
+        "context_meta": context.get("summary", {}),
+    }

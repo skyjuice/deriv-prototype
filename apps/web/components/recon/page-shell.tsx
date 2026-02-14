@@ -1,3 +1,4 @@
+import { ChatWidget } from "@/components/recon/chat-widget";
 import { TopNav } from "@/components/recon/top-nav";
 
 export function PageShell({ title, children }: { title: string; children: React.ReactNode }) {
@@ -8,6 +9,7 @@ export function PageShell({ title, children }: { title: string; children: React.
         <h1 className="mb-6 text-2xl font-semibold tracking-tight">{title}</h1>
         {children}
       </main>
+      <ChatWidget />
     </div>
   );
 }

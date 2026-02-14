@@ -10,7 +10,7 @@ type Props = {
   items: MonthlyCloseBatch[];
 };
 
-type ActionName = "journal" | "submit";
+type ActionName = "journal" | "submit" | "revert";
 
 function stateClass(item: MonthlyCloseBatch) {
   if (item.submitted_to_erp) return "bg-emerald-100 text-emerald-700";
@@ -38,10 +38,34 @@ function sourceRunStatusText(doubtfulTransactions: number, notifiedToSource: boo
   return "Issue pending";
 }
 
+function formatTimestamp(value: string | null | undefined) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getUTCDate()).padStart(2, "0");
+  const hour = String(parsed.getUTCHours()).padStart(2, "0");
+  const minute = String(parsed.getUTCMinutes()).padStart(2, "0");
+  const second = String(parsed.getUTCSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second} UTC`;
+}
+
+function formatAmount(value: number | null | undefined, fractionDigits = 2) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "-";
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(value);
+}
+
 export function MonthlyCloseBoard({ items }: Props) {
   const router = useRouter();
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [errorByMonth, setErrorByMonth] = useState<Record<string, string>>({});
+  const [openPayloadMonth, setOpenPayloadMonth] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function runAction(month: string, action: ActionName) {
@@ -56,6 +80,9 @@ export function MonthlyCloseBoard({ items }: Props) {
           const payload = await response.json().catch(() => ({ error: "Action failed" }));
           if (!response.ok) {
             throw new Error(payload.error || "Action failed");
+          }
+          if (action === "revert") {
+            setOpenPayloadMonth((prev) => (prev === month ? null : prev));
           }
           router.refresh();
         } catch (error) {
@@ -83,6 +110,9 @@ export function MonthlyCloseBoard({ items }: Props) {
             notificationsReady &&
             !item.submitted_to_erp &&
             (item.good_transactions === 0 || item.journal_created);
+          const canRevert = item.submitted_to_erp;
+          const payload = item.erp_submission_payload;
+          const showPayload = openPayloadMonth === item.month;
           return (
             <article key={item.month} className="rounded-lg border p-3">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -131,6 +161,21 @@ export function MonthlyCloseBoard({ items }: Props) {
                 >
                   {pendingKey === `${item.month}:submit` ? "Working..." : "Submit to ERP"}
                 </button>
+                <button
+                  onClick={() => runAction(item.month, "revert")}
+                  disabled={!canRevert || isPending}
+                  className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {pendingKey === `${item.month}:revert` ? "Working..." : "Revert to Create Journal"}
+                </button>
+                {payload ? (
+                  <button
+                    onClick={() => setOpenPayloadMonth((prev) => (prev === item.month ? null : item.month))}
+                    className="rounded border px-2 py-1 text-xs"
+                  >
+                    {showPayload ? "Hide Submitted Data" : "View Submitted Data"}
+                  </button>
+                ) : null}
               </div>
 
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
@@ -139,9 +184,88 @@ export function MonthlyCloseBoard({ items }: Props) {
                     Send PSP notification before ERP submission
                   </span>
                 ) : null}
-                {item.journal_created_at ? <span className="rounded border px-2 py-0.5">Journal: {item.journal_created_at}</span> : null}
-                {item.submitted_at ? <span className="rounded border px-2 py-0.5">Submitted: {item.submitted_at}</span> : null}
+                {item.journal_created_at ? <span className="rounded border px-2 py-0.5">Journal: {formatTimestamp(item.journal_created_at)}</span> : null}
+                {item.submitted_at ? <span className="rounded border px-2 py-0.5">Submitted: {formatTimestamp(item.submitted_at)}</span> : null}
               </div>
+
+              {payload && showPayload ? (
+                <div className="mt-3 rounded border bg-muted/20 p-2 text-xs">
+                  <p className="font-medium">Submitted ERP Payload</p>
+                  <p className="mt-1 text-muted-foreground">
+                    Actor: {payload.submitted_by} • {formatTimestamp(payload.submitted_at)}
+                  </p>
+
+                  <div className="mt-2 grid gap-2 md:grid-cols-5">
+                    <div className="rounded border bg-card p-2">
+                      <p className="text-muted-foreground">Expected Good Txn</p>
+                      <p className="font-medium">{formatAmount(payload.expected_good_transactions, 0)}</p>
+                    </div>
+                    <div className="rounded border bg-card p-2">
+                      <p className="text-muted-foreground">Submitted Txn</p>
+                      <p className="font-medium">{formatAmount(payload.submitted_transactions, 0)}</p>
+                    </div>
+                    <div className="rounded border bg-card p-2">
+                      <p className="text-muted-foreground">Total Settlement</p>
+                      <p className="font-medium">{formatAmount(payload.total_settlement)}</p>
+                    </div>
+                    <div className="rounded border bg-card p-2">
+                      <p className="text-muted-foreground">Total Fee</p>
+                      <p className="font-medium">{formatAmount(payload.total_fee)}</p>
+                    </div>
+                    <div className="rounded border bg-card p-2">
+                      <p className="text-muted-foreground">Total Withdrawal</p>
+                      <p className="font-medium">{formatAmount(payload.total_withdrawal)}</p>
+                    </div>
+                  </div>
+
+                  {payload.currency_breakdown.length > 0 ? (
+                    <div className="mt-2 overflow-x-auto rounded border bg-card">
+                      <table className="w-full min-w-[560px] text-left text-xs">
+                        <thead className="border-b bg-muted/40 text-muted-foreground">
+                          <tr>
+                            <th className="px-2 py-1">Currency</th>
+                            <th className="px-2 py-1">Txn</th>
+                            <th className="px-2 py-1">Settlement</th>
+                            <th className="px-2 py-1">Fee</th>
+                            <th className="px-2 py-1">Withdrawal</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {payload.currency_breakdown.map((row) => (
+                            <tr key={`${item.month}-${row.currency}`} className="border-b">
+                              <td className="px-2 py-1 font-medium">{row.currency}</td>
+                              <td className="px-2 py-1">{formatAmount(row.submitted_transactions, 0)}</td>
+                              <td className="px-2 py-1">{formatAmount(row.total_settlement)}</td>
+                              <td className="px-2 py-1">{formatAmount(row.total_fee)}</td>
+                              <td className="px-2 py-1">{formatAmount(row.total_withdrawal)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+
+                  {payload.run_breakdown.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {payload.run_breakdown.map((row) => (
+                        <Link
+                          key={`${item.month}-submitted-${row.run_id}`}
+                          href={`/runs/${row.run_id}`}
+                          className="rounded border bg-card px-2 py-1 text-[11px]"
+                        >
+                          {row.run_number} • {row.business_date} • Txn {formatAmount(row.submitted_transactions, 0)}
+                        </Link>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {payload.warnings && payload.warnings.length > 0 ? (
+                    <p className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-700">
+                      {payload.warnings.join(" | ")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
 
               {errorByMonth[item.month] ? <p className="mt-2 text-xs text-rose-700">{errorByMonth[item.month]}</p> : null}
             </article>

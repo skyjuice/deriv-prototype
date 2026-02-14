@@ -209,6 +209,7 @@ class MonthlyCloseBatch(BaseModel):
     next_action: str = "wait_for_daily_close"  # wait_for_daily_close | create_journal | submit_to_erp | completed
     journal_created_at: str | None = None
     submitted_at: str | None = None
+    erp_submission_payload: dict[str, Any] | None = None
 
 
 class RunSummary(BaseModel):

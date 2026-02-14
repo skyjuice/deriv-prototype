@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .formatting import parse_any_file, standardize_frame
 from .schemas import (
     AIReviewStep,
     AnnouncementItem,
@@ -163,6 +165,141 @@ class Storage:
     def list_run_files(self, run_id: str) -> list[dict[str, Any]]:
         data = self._load()
         return [f for f in data["files"].values() if f["run_id"] == run_id]
+
+    def _latest_run_file_by_source(self, data: dict[str, Any], run_id: str, source_type: str) -> dict[str, Any] | None:
+        files = [
+            row
+            for row in data["files"].values()
+            if row.get("run_id") == run_id and str(row.get("source_type")) == source_type
+        ]
+        if not files:
+            return None
+        return files[-1]
+
+    def _normalize_cell_value(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if hasattr(value, "item"):
+            try:
+                value = value.item()
+            except Exception:
+                pass
+        if isinstance(value, float) and math.isnan(value):
+            return None
+        return value
+
+    def get_transaction_source_snapshot(self, run_id: str, merchant_ref: str) -> dict[str, Any]:
+        data = self._load()
+        if run_id not in data["runs"]:
+            raise KeyError(run_id)
+
+        target_ref = str(merchant_ref)
+        source_rows: dict[str, dict[str, Any]] = {}
+        comparable_fields = {
+            "gross_amount",
+            "processing_fee",
+            "net_payout",
+            "currency",
+            "client_id",
+            "bank_country",
+        }
+        available_for_compare: list[dict[str, Any]] = []
+
+        for source in ("internal", "erp", "psp"):
+            file_row = self._latest_run_file_by_source(data, run_id, source)
+            if not file_row:
+                source_rows[source] = {
+                    "found": False,
+                    "error": "file_not_uploaded",
+                    "filename": None,
+                    "source_type": source,
+                    "row": None,
+                }
+                continue
+
+            try:
+                parsed = parse_any_file(str(file_row.get("path", "")), str(file_row.get("format_type", "")))
+                standardized, result = standardize_frame(parsed)
+                if not result.ok:
+                    raise ValueError(result.reason or "format check failed")
+            except Exception as exc:
+                source_rows[source] = {
+                    "found": False,
+                    "error": f"file_parse_failed:{exc}",
+                    "filename": file_row.get("filename"),
+                    "source_type": source,
+                    "row": None,
+                }
+                continue
+
+            matched = standardized[standardized["merchant_ref"].astype(str) == target_ref]
+            if matched.empty:
+                source_rows[source] = {
+                    "found": False,
+                    "error": "merchant_ref_not_found",
+                    "filename": file_row.get("filename"),
+                    "source_type": source,
+                    "row": None,
+                }
+                continue
+
+            first = matched.iloc[0]
+            payload_row = {
+                "psp_txn_id": self._normalize_cell_value(first.get("psp_txn_id")),
+                "merchant_ref": self._normalize_cell_value(first.get("merchant_ref")),
+                "gross_amount": self._normalize_cell_value(first.get("gross_amount")),
+                "processing_fee": self._normalize_cell_value(first.get("processing_fee")),
+                "net_payout": self._normalize_cell_value(first.get("net_payout")),
+                "currency": self._normalize_cell_value(first.get("currency")),
+                "status": self._normalize_cell_value(first.get("status")),
+                "transaction_date": self._normalize_cell_value(first.get("transaction_date")),
+                "settlement_date": self._normalize_cell_value(first.get("settlement_date")),
+                "client_id": self._normalize_cell_value(first.get("client_id")),
+                "client_name": self._normalize_cell_value(first.get("client_name")),
+                "payment_method": self._normalize_cell_value(first.get("payment_method")),
+                "bank_country": self._normalize_cell_value(first.get("bank_country")),
+                "settlement_bank": self._normalize_cell_value(first.get("settlement_bank")),
+                "fx_rate": self._normalize_cell_value(first.get("fx_rate")),
+            }
+            source_rows[source] = {
+                "found": True,
+                "error": None,
+                "filename": file_row.get("filename"),
+                "source_type": source,
+                "row": payload_row,
+            }
+            available_for_compare.append(payload_row)
+
+        checks: dict[str, Any] = {
+            "amount_consistency": None,
+            "identity_consistency": None,
+            "compared_sources": sum(1 for source in source_rows.values() if source.get("found")),
+        }
+        if len(available_for_compare) >= 2:
+            amount_signatures = {
+                tuple(
+                    self._normalize_cell_value(row.get(field))
+                    for field in ("gross_amount", "processing_fee", "net_payout")
+                )
+                for row in available_for_compare
+            }
+            identity_signatures = {
+                tuple(
+                    self._normalize_cell_value(row.get(field))
+                    for field in ("currency", "client_id", "bank_country")
+                )
+                for row in available_for_compare
+            }
+            checks["amount_consistency"] = len(amount_signatures) == 1
+            checks["identity_consistency"] = len(identity_signatures) == 1
+
+        return {
+            "run_id": run_id,
+            "merchant_ref": target_ref,
+            "fields_used_for_compare": sorted(comparable_fields),
+            "checks": checks,
+            "sources": source_rows,
+        }
 
     def _ensure_month_state(self, data: dict[str, Any], run_id: str, month: str) -> dict[str, Any]:
         state_by_run = data["monthly_submissions"].setdefault(run_id, {})
@@ -641,7 +778,137 @@ class Storage:
             state["journal_created"] = False
         if "submitted_to_erp" not in state:
             state["submitted_to_erp"] = False
+        if "erp_submission_payload" not in state:
+            state["erp_submission_payload"] = None
         return state
+
+    def _build_monthly_close_submission_payload(
+        self,
+        data: dict[str, Any],
+        batch: MonthlyCloseBatch,
+        month: str,
+        actor: str,
+        submitted_at: str,
+    ) -> dict[str, Any]:
+        expected_good_transactions = batch.good_transactions
+        submitted_transactions = 0
+        total_settlement = 0.0
+        total_fee = 0.0
+        total_withdrawal = 0.0
+        warnings: list[str] = []
+        run_breakdown: list[dict[str, Any]] = []
+        currency_totals: dict[str, dict[str, Any]] = {}
+
+        for run_id in batch.source_run_ids:
+            decisions = [
+                MatchDecision(**row)
+                for row in data["decisions"].get(run_id, [])
+                if (row.get("transaction_month") or "unknown") == month
+            ]
+            good_refs = {
+                decision.merchant_ref
+                for decision in decisions
+                if decision.final_status.value == "good_transaction"
+            }
+            if not good_refs:
+                continue
+
+            run_files = [
+                row
+                for row in data["files"].values()
+                if row.get("run_id") == run_id and row.get("source_type") == "erp"
+            ]
+            if not run_files:
+                warnings.append(f"{run_id}: ERP file not found; monetary totals may be incomplete")
+                continue
+
+            erp_file = run_files[-1]
+            file_path = str(erp_file.get("path", ""))
+            file_ext = str(erp_file.get("format_type", ""))
+
+            try:
+                parsed = parse_any_file(file_path, file_ext)
+                standardized, result = standardize_frame(parsed)
+                if not result.ok:
+                    raise ValueError(result.reason or "format check failed")
+            except Exception as exc:
+                warnings.append(f"{run_id}: failed to parse ERP file ({exc})")
+                continue
+
+            filtered = standardized[standardized["merchant_ref"].astype(str).isin(good_refs)]
+            if filtered.empty:
+                warnings.append(f"{run_id}: no matching good transactions found in ERP file")
+                continue
+
+            filtered = filtered.copy()
+            filtered["currency"] = filtered["currency"].astype(str)
+
+            run_tx_count = int(len(filtered))
+            run_settlement = float(filtered["net_payout"].fillna(0).sum())
+            run_fee = float(filtered["processing_fee"].fillna(0).sum())
+            run_withdrawal = float(filtered["gross_amount"].fillna(0).sum())
+
+            submitted_transactions += run_tx_count
+            total_settlement += run_settlement
+            total_fee += run_fee
+            total_withdrawal += run_withdrawal
+
+            run_breakdown.append(
+                {
+                    "run_id": run_id,
+                    "run_number": f"RUN-{run_id[:8].upper()}",
+                    "business_date": self._run_business_date(data, run_id),
+                    "submitted_transactions": run_tx_count,
+                    "total_settlement": round(run_settlement, 2),
+                    "total_fee": round(run_fee, 2),
+                    "total_withdrawal": round(run_withdrawal, 2),
+                }
+            )
+
+            for currency, rows in filtered.groupby("currency"):
+                currency_key = str(currency or "UNKNOWN")
+                bucket = currency_totals.setdefault(
+                    currency_key,
+                    {
+                        "currency": currency_key,
+                        "submitted_transactions": 0,
+                        "total_settlement": 0.0,
+                        "total_fee": 0.0,
+                        "total_withdrawal": 0.0,
+                    },
+                )
+                bucket["submitted_transactions"] += int(len(rows))
+                bucket["total_settlement"] += float(rows["net_payout"].fillna(0).sum())
+                bucket["total_fee"] += float(rows["processing_fee"].fillna(0).sum())
+                bucket["total_withdrawal"] += float(rows["gross_amount"].fillna(0).sum())
+
+        payload: dict[str, Any] = {
+            "month": month,
+            "submitted_at": submitted_at,
+            "submitted_by": actor,
+            "channel": "erp_api",
+            "source_run_ids": batch.source_run_ids,
+            "expected_good_transactions": expected_good_transactions,
+            "submitted_transactions": submitted_transactions,
+            "total_settlement": round(total_settlement, 2),
+            "total_fee": round(total_fee, 2),
+            "total_withdrawal": round(total_withdrawal, 2),
+            "run_breakdown": sorted(run_breakdown, key=lambda item: str(item["run_id"])),
+            "currency_breakdown": [
+                {
+                    "currency": value["currency"],
+                    "submitted_transactions": value["submitted_transactions"],
+                    "total_settlement": round(float(value["total_settlement"]), 2),
+                    "total_fee": round(float(value["total_fee"]), 2),
+                    "total_withdrawal": round(float(value["total_withdrawal"]), 2),
+                }
+                for _, value in sorted(currency_totals.items(), key=lambda item: item[0])
+            ],
+        }
+        if warnings:
+            payload["warnings"] = warnings
+
+        return payload
 
     def _build_monthly_close_batches_from_data(self, data: dict[str, Any]) -> list[MonthlyCloseBatch]:
         aggregates: dict[str, dict[str, Any]] = {}
@@ -740,6 +1007,7 @@ class Storage:
                     next_action=next_action,
                     journal_created_at=state.get("journal_created_at"),
                     submitted_at=state.get("submitted_at"),
+                    erp_submission_payload=state.get("erp_submission_payload"),
                 )
             )
 
@@ -795,9 +1063,40 @@ class Storage:
             raise ValueError("create monthly journal before submitting to ERP")
 
         before = dict(state)
+        submitted_at = self.now().isoformat()
         state["submitted_to_erp"] = True
-        state["submitted_at"] = self.now().isoformat()
+        state["submitted_at"] = submitted_at
+        state["erp_submission_payload"] = self._build_monthly_close_submission_payload(
+            data=data,
+            batch=batch,
+            month=month,
+            actor=actor,
+            submitted_at=submitted_at,
+        )
         self._audit(data, actor, "monthly_close_submit_erp", "monthly_close", month, before, state)
+        self._save(data)
+        return self.get_monthly_close_batch(month)
+
+    def revert_monthly_close_submission(self, month: str, actor: str = "system") -> MonthlyCloseBatch:
+        data = self._load()
+        batch = None
+        for row in self._build_monthly_close_batches_from_data(data):
+            if row.month == month:
+                batch = row
+                break
+        if batch is None:
+            raise KeyError(month)
+        if not batch.submitted_to_erp:
+            raise ValueError("monthly close is not submitted yet")
+
+        state = self._ensure_monthly_close_state(data, month)
+        before = dict(state)
+        state["submitted_to_erp"] = False
+        state["submitted_at"] = None
+        state["journal_created"] = False
+        state["journal_created_at"] = None
+        state["erp_submission_payload"] = None
+        self._audit(data, actor, "monthly_close_revert_submission", "monthly_close", month, before, state)
         self._save(data)
         return self.get_monthly_close_batch(month)
 
@@ -921,6 +1220,161 @@ class Storage:
         for rows in data["announcements"].values():
             out.extend(AnnouncementItem(**r) for r in rows)
         return out
+
+    def build_chat_context(
+        self,
+        run_id: str | None = None,
+        limit_runs: int = 8,
+        limit_transactions: int = 200,
+        limit_announcements: int = 20,
+    ) -> dict[str, Any]:
+        data = self._load()
+        runs = [ReconciliationRun(**row) for row in data["runs"].values()]
+        runs.sort(key=lambda item: item.created_at, reverse=True)
+        if run_id:
+            runs = [item for item in runs if item.id == run_id]
+        selected_runs = runs[: max(1, limit_runs)] if runs else []
+
+        decisions_total = sum(len(rows) for rows in data["decisions"].values())
+        exception_rows = [row for rows in data["exceptions"].values() for row in rows]
+        open_exceptions = sum(
+            1 for row in exception_rows if str(row.get("state", "open")).lower() not in {"verified", "approved", "resolved"}
+        )
+
+        reason_counts: dict[str, int] = {}
+        run_rows: list[dict[str, Any]] = []
+        tx_rows: list[dict[str, Any]] = []
+        exception_index: dict[str, dict[str, Any]] = {}
+
+        for run in selected_runs:
+            run_decisions = [MatchDecision(**row) for row in data["decisions"].get(run.id, [])]
+            run_exceptions = [ExceptionCase(**row) for row in data["exceptions"].get(run.id, [])]
+            monthly = self._build_monthly_summaries_from_data(data, run.id)
+            daily = self._build_daily_ops_summary_from_data(data, run.id)
+
+            for decision in run_decisions:
+                for reason in decision.reason_codes:
+                    reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+                if len(tx_rows) >= limit_transactions:
+                    continue
+
+                trace = decision.trace_json if isinstance(decision.trace_json, dict) else {}
+                sources_present = trace.get("sources_present")
+                if not isinstance(sources_present, dict):
+                    sources_present = {}
+                tx_rows.append(
+                    {
+                        "run_id": decision.run_id,
+                        "run_number": f"RUN-{decision.run_id[:8].upper()}",
+                        "merchant_ref": decision.merchant_ref,
+                        "transaction_month": decision.transaction_month,
+                        "final_status": decision.final_status.value,
+                        "reason_codes": decision.reason_codes,
+                        "stage_results": decision.stage_results.model_dump(mode="json"),
+                        "fuzzy_score": decision.fuzzy_score,
+                        "backdated_gap_days": decision.backdated_gap_days,
+                        "fx_detail": decision.fx_detail,
+                        "sources_present": sources_present,
+                    }
+                )
+
+            for exception in run_exceptions:
+                exception_index[exception.merchant_ref] = {
+                    "exception_id": exception.id,
+                    "run_id": exception.run_id,
+                    "merchant_ref": exception.merchant_ref,
+                    "severity": exception.severity,
+                    "state": exception.state,
+                    "reason_codes": exception.reason_codes,
+                }
+
+            run_rows.append(
+                {
+                    "run_id": run.id,
+                    "run_number": f"RUN-{run.id[:8].upper()}",
+                    "status": run.status.value,
+                    "stage": run.stage,
+                    "created_at": run.created_at.isoformat(),
+                    "updated_at": run.updated_at.isoformat(),
+                    "counters": run.counters,
+                    "business_date": daily.business_date,
+                    "daily_close_state": daily.close_state,
+                    "daily_next_action": daily.next_action,
+                    "monthly": [
+                        {
+                            "month": item.month,
+                            "total_transactions": item.total_transactions,
+                            "good_transactions": item.good_transactions,
+                            "doubtful_transactions": item.doubtful_transactions,
+                            "unresolved_doubtful": item.unresolved_doubtful,
+                            "ready_for_submission": item.ready_for_submission,
+                            "notified_to_source": item.notified_to_source,
+                            "journal_created": item.journal_created,
+                            "submitted_to_erp": item.submitted_to_erp,
+                            "next_action": item.next_action,
+                        }
+                        for item in sorted(monthly, key=lambda row: row.month, reverse=True)
+                    ],
+                }
+            )
+
+        monthly_close_rows = [
+            {
+                "month": item.month,
+                "source_run_count": item.source_run_count,
+                "total_transactions": item.total_transactions,
+                "good_transactions": item.good_transactions,
+                "doubtful_transactions": item.doubtful_transactions,
+                "doubtful_notification_required": item.doubtful_notification_required,
+                "doubtful_notification_sent": item.doubtful_notification_sent,
+                "ready_for_erp": item.ready_for_erp,
+                "journal_created": item.journal_created,
+                "submitted_to_erp": item.submitted_to_erp,
+                "next_action": item.next_action,
+            }
+            for item in self._build_monthly_close_batches_from_data(data)
+        ]
+
+        announcement_rows: list[dict[str, Any]] = []
+        for source_run_id, rows in data["announcements"].items():
+            for row in rows:
+                announcement_rows.append(
+                    {
+                        "run_id": source_run_id,
+                        "level": row.get("level"),
+                        "title": row.get("title"),
+                        "message": row.get("message"),
+                    }
+                )
+        announcement_rows = announcement_rows[-limit_announcements:]
+        announcement_rows.reverse()
+
+        top_reason_codes = [
+            {"reason_code": reason, "count": count}
+            for reason, count in sorted(reason_counts.items(), key=lambda item: item[1], reverse=True)[:10]
+        ]
+
+        return {
+            "generated_at": self.now().isoformat(),
+            "scope": {
+                "run_id": run_id,
+                "selected_run_ids": [item.id for item in selected_runs],
+            },
+            "summary": {
+                "runs_total": len(data["runs"]),
+                "decisions_total": decisions_total,
+                "exceptions_total": len(exception_rows),
+                "open_exceptions": open_exceptions,
+                "monthly_close_batches": len(monthly_close_rows),
+            },
+            "runs": run_rows,
+            "monthly_close": monthly_close_rows,
+            "top_reason_codes": top_reason_codes,
+            "transaction_index": tx_rows,
+            "exceptions_index": list(exception_index.values()),
+            "recent_announcements": announcement_rows,
+        }
 
     def _audit(
         self,

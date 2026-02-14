@@ -93,5 +93,16 @@ def test_daily_and_monthly_close_segregation() -> None:
             submitted = storage.submit_monthly_close_to_erp("2026-03", actor="admin")
             assert submitted.submitted_to_erp is True
             assert submitted.next_action == "completed"
+            assert submitted.erp_submission_payload is not None
+            assert submitted.erp_submission_payload["month"] == "2026-03"
+            assert submitted.erp_submission_payload["expected_good_transactions"] == 1
+
+            reverted = storage.revert_monthly_close_submission("2026-03", actor="admin")
+            assert reverted.submitted_to_erp is False
+            assert reverted.journal_created is False
+            assert reverted.next_action == "create_journal"
+            assert reverted.submitted_at is None
+            assert reverted.journal_created_at is None
+            assert reverted.erp_submission_payload is None
         finally:
             object.__setattr__(storage_settings, "storage_dir", original_storage_dir)

@@ -1,0 +1,9 @@
+psp_txn_id,merchant_ref,gross_amount,currency,processing_fee,net_payout,transaction_date,settlement_date,client_id,client_name,description,status,payment_method,settlement_bank,bank_country,fx_rate
+SCENARIO3-INT-002,SCENARIO3-REF-002,1020,MYR,10,1010,2026-03-01T12:00:00,2026-03-01T12:00:00,CLT-3002,Client 2,Internal booking Client 2,confirmed,card,Maybank,MY,
+SCENARIO3-INT-003,SCENARIO3-REF-003,1030,MYR,10,1020,2026-03-01T13:00:00,2026-03-01T13:00:00,CLT-3003,Client 3,Internal booking Client 3,confirmed,card,Maybank,MY,
+SCENARIO3-INT-004,SCENARIO3-REF-004,1040,MYR,10,1030,2026-03-01T14:00:00,2026-03-01T14:00:00,CLT-3004,Client 4,Internal booking Client 4,confirmed,card,Maybank,MY,
+SCENARIO3-INT-005,SCENARIO3-REF-005,1050,MYR,10,1040,2026-03-01T15:00:00,2026-03-01T15:00:00,CLT-3005,Client 5,Internal booking Client 5,confirmed,card,Maybank,MY,
+SCENARIO3-INT-006,SCENARIO3-REF-006,1060,MYR,10,1050,2026-02-27T10:00:00,2026-02-27T10:00:00,CLT-3006,Client 6,Internal booking Client 6,confirmed,card,HSBC,ID,
+SCENARIO3-INT-007,SCENARIO3-REF-007,1070,IDR,10,1060,2026-02-27T10:00:00,2026-02-27T10:00:00,CLT-3007,Client 7,Internal booking Client 7,confirmed,card,HSBC,ID,0.0003
+SCENARIO3-INT-008,SCENARIO3-REF-008,1080,IDR,10,1070,2026-02-27T10:00:00,2026-02-27T10:00:00,CLT-3008,Client 8,Internal booking Client 8,confirmed,card,HSBC,ID,0.0003
+SCENARIO3-INT-009,SCENARIO3-REF-009,1090,HKD,10,1080,2026-03-01T19:00:00,2026-03-01T19:00:00,CLT-3009,Client 9,Internal booking Client 9,confirmed,card,HSBC,HK,0.58

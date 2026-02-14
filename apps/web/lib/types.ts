@@ -35,6 +35,46 @@ export interface MatchDecision {
   trace_json?: Record<string, unknown> | null;
 }
 
+export interface TransactionSourceSnapshot {
+  run_id: string;
+  merchant_ref: string;
+  fields_used_for_compare: string[];
+  checks: TransactionSourceChecks;
+  sources: Record<string, TransactionSourceData>;
+}
+
+export interface TransactionSourceChecks {
+  amount_consistency?: boolean | null;
+  identity_consistency?: boolean | null;
+  compared_sources: number;
+}
+
+export interface TransactionSourceData {
+  found: boolean;
+  error?: string | null;
+  filename?: string | null;
+  source_type: string;
+  row?: TransactionSourceRow | null;
+}
+
+export interface TransactionSourceRow {
+  psp_txn_id?: string | null;
+  merchant_ref?: string | null;
+  gross_amount?: number | null;
+  processing_fee?: number | null;
+  net_payout?: number | null;
+  currency?: string | null;
+  status?: string | null;
+  transaction_date?: string | null;
+  settlement_date?: string | null;
+  client_id?: string | null;
+  client_name?: string | null;
+  payment_method?: string | null;
+  bank_country?: string | null;
+  settlement_bank?: string | null;
+  fx_rate?: number | null;
+}
+
 export interface ExceptionItem {
   id: string;
   run_id: string;
@@ -137,6 +177,7 @@ export interface MonthlyCloseBatch {
   next_action: string;
   journal_created_at?: string | null;
   submitted_at?: string | null;
+  erp_submission_payload?: MonthlyCloseErpSubmissionPayload | null;
 }
 
 export interface MonthlyCloseSourceRun {
@@ -146,6 +187,40 @@ export interface MonthlyCloseSourceRun {
   close_state: string;
   doubtful_transactions: number;
   notified_to_source: boolean;
+}
+
+export interface MonthlyCloseErpSubmissionPayload {
+  month: string;
+  submitted_at: string;
+  submitted_by: string;
+  channel: string;
+  source_run_ids: string[];
+  expected_good_transactions: number;
+  submitted_transactions: number;
+  total_settlement: number;
+  total_fee: number;
+  total_withdrawal: number;
+  run_breakdown: MonthlyCloseErpRunBreakdown[];
+  currency_breakdown: MonthlyCloseErpCurrencyBreakdown[];
+  warnings?: string[];
+}
+
+export interface MonthlyCloseErpRunBreakdown {
+  run_id: string;
+  run_number: string;
+  business_date: string;
+  submitted_transactions: number;
+  total_settlement: number;
+  total_fee: number;
+  total_withdrawal: number;
+}
+
+export interface MonthlyCloseErpCurrencyBreakdown {
+  currency: string;
+  submitted_transactions: number;
+  total_settlement: number;
+  total_fee: number;
+  total_withdrawal: number;
 }
 
 export interface AIFeedback {

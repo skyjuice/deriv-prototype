@@ -17,6 +17,7 @@ export default function NewRunPage() {
   const [files, setFiles] = useState<Partial<Record<SourceType, File>>>({});
   const [urlSource, setUrlSource] = useState<SourceType>("psp");
   const [url, setUrl] = useState("");
+  const [autoTask, setAutoTask] = useState("");
   const [status, setStatus] = useState("");
 
   const ensureRun = async () => {
@@ -87,6 +88,26 @@ export default function NewRunPage() {
     setStatus(`Remote file attached for ${SOURCE_LABELS[urlSource]}`);
   };
 
+  const autoDownloadAndAttach = async () => {
+    try {
+      const currentRun = await ensureRun();
+      setStatus("Auto downloading file...");
+      const response = await fetch(`/api/v1/runs/${currentRun}/auto-download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceType: urlSource, task: autoTask.trim() || undefined }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Auto download failed");
+      }
+      const filename = payload?.file?.filename || "file";
+      setStatus(`Auto downloaded and attached for ${SOURCE_LABELS[urlSource]}: ${filename}`);
+    } catch (error) {
+      setStatus((error as Error).message);
+    }
+  };
+
   return (
     <PageShell title="New Reconciliation Run">
       <section className="grid gap-4 lg:grid-cols-2">
@@ -108,7 +129,7 @@ export default function NewRunPage() {
 
         <article className="rounded-xl border bg-card p-4">
           <h2 className="font-medium">AI URL Pull</h2>
-          <p className="mb-4 text-sm text-muted-foreground">Fetch a remote statement and attach it to the run.</p>
+          <p className="mb-4 text-sm text-muted-foreground">Fetch a remote statement or auto-download a file and attach it to the run.</p>
           <div className="space-y-3">
             <select className="w-full rounded-lg border px-3 py-2 text-sm" value={urlSource} onChange={(e) => setUrlSource(e.target.value as SourceType)}>
               {SOURCES.map((source) => (
@@ -117,6 +138,15 @@ export default function NewRunPage() {
             </select>
             <input value={url} onChange={(e) => setUrl(e.target.value)} className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="https://example.com/statement.csv" />
             <button onClick={fetchRemote} className="rounded-lg border px-3 py-2 text-sm">Attach Remote File</button>
+            <textarea
+              value={autoTask}
+              onChange={(e) => setAutoTask(e.target.value)}
+              className="min-h-20 w-full rounded-lg border px-3 py-2 text-sm"
+              placeholder='Optional auto-download task override. Leave empty to use default task (payflow-p2p csv).'
+            />
+            <button onClick={autoDownloadAndAttach} className="rounded-lg border px-3 py-2 text-sm">
+              Auto Download and Attach
+            </button>
           </div>
         </article>
       </section>

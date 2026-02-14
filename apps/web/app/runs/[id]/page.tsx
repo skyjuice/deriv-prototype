@@ -1,15 +1,14 @@
+import Link from "next/link";
+
 import { PageShell } from "@/components/recon/page-shell";
-import { MonthlySubmissionBoard } from "@/components/recon/monthly-submission-board";
-import type { AIReview, ExceptionItem, MatchDecision, MonthlySubmission, Run } from "@/lib/types";
+import type { MatchDecision, MonthlySubmission, Run } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 type RunData = {
   run: Run | null;
   decisions: MatchDecision[];
-  exceptions: ExceptionItem[];
   monthlySubmissions: MonthlySubmission[];
-  reviewsByException: Record<string, AIReview[]>;
 };
 
 type Stage = {
@@ -30,26 +29,12 @@ async function getRunData(id: string): Promise<RunData> {
   const run = runResponse.ok ? ((await runResponse.json()) as Run) : null;
   const summary = summaryResponse.ok ? await summaryResponse.json() : { decisions: [], exceptions: [] };
   const decisions = (summary.decisions || []) as MatchDecision[];
-  const exceptions = (summary.exceptions || []) as ExceptionItem[];
   const monthlySubmissions = (summary.monthly_submissions || []) as MonthlySubmission[];
-
-  const reviewEntries = await Promise.all(
-    exceptions.map(async (item) => {
-      const response = await fetch(`${base}/api/v1/exceptions/${item.id}/reviews`, { cache: "no-store" });
-      if (!response.ok) {
-        return [item.id, []] as const;
-      }
-      const payload = await response.json();
-      return [item.id, (payload.reviews || []) as AIReview[]] as const;
-    }),
-  );
 
   return {
     run,
     decisions,
-    exceptions,
     monthlySubmissions,
-    reviewsByException: Object.fromEntries(reviewEntries) as Record<string, AIReview[]>,
   };
 }
 
@@ -94,8 +79,6 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
     { name: "FX", pass: fxPass, fail: total - fxPass, note: "Rate completeness / handling" },
     { name: "Final", pass: goodCount, fail: doubtfulCount, note: "Good vs doubtful" },
   ];
-
-  const exceptionByMerchant = new Map(data.exceptions.map((item) => [item.merchant_ref, item]));
 
   return (
     <PageShell title={`Run ${id.slice(0, 8)}`}>
@@ -165,8 +148,6 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
         </div>
       </section>
 
-      <MonthlySubmissionBoard runId={id} items={data.monthlySubmissions} />
-
       <section className="mb-4 rounded-xl border bg-card p-4">
         <h2 className="mb-3 font-medium">Transaction Logic Trace</h2>
         <div className="overflow-x-auto">
@@ -188,9 +169,12 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
               {data.decisions.map((decision) => (
                 <tr key={decision.merchant_ref} className="border-b align-top">
                   <td className="px-2 py-2 font-mono">
-                    <a href={`#trace-${decision.merchant_ref}`} className="underline decoration-dotted underline-offset-2">
+                    <Link
+                      href={`/runs/${id}/transactions/${encodeURIComponent(decision.merchant_ref)}`}
+                      className="underline decoration-dotted underline-offset-2"
+                    >
                       {decision.merchant_ref}
-                    </a>
+                    </Link>
                   </td>
                   <td className="px-2 py-2">
                     <span className={`rounded-full px-2 py-1 ${cx(decision.stage_results.exact_hash)}`}>
@@ -220,9 +204,12 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
                   </td>
                   <td className="px-2 py-2 text-muted-foreground">{decision.reason_codes.length ? decision.reason_codes.join(", ") : "-"}</td>
                   <td className="px-2 py-2">
-                    <a href={`#trace-${decision.merchant_ref}`} className="rounded border px-2 py-1 text-[11px] hover:bg-muted">
+                    <Link
+                      href={`/runs/${id}/transactions/${encodeURIComponent(decision.merchant_ref)}`}
+                      className="rounded border px-2 py-1 text-[11px] hover:bg-muted"
+                    >
                       View trace
-                    </a>
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -230,81 +217,6 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
           </table>
         </div>
       </section>
-
-      <section className="mb-4 rounded-xl border bg-card p-4">
-        <h2 className="mb-3 font-medium">Per-Transaction Deep Dive</h2>
-        <p className="mb-3 text-xs text-muted-foreground">
-          Click from the table above or expand any record below to inspect Trinity checks, rule handling, and AI stage outputs.
-        </p>
-        <div className="space-y-3">
-          {data.decisions.map((decision) => {
-            const maybeException = exceptionByMerchant.get(decision.merchant_ref);
-            const reviews = maybeException ? data.reviewsByException[maybeException.id] || [] : [];
-            const trace = (decision.trace_json || {}) as Record<string, unknown>;
-            const exact = (trace.exact_hash || {}) as Record<string, unknown>;
-            const fuzzy = (trace.fuzzy || {}) as Record<string, unknown>;
-            const threeWay = (trace.three_way || {}) as Record<string, unknown>;
-            const backdated = (trace.backdated || {}) as Record<string, unknown>;
-            const fx = (trace.fx || {}) as Record<string, unknown>;
-
-            return (
-              <details key={`trace-${decision.merchant_ref}`} id={`trace-${decision.merchant_ref}`} className="rounded-lg border p-3">
-                <summary className="cursor-pointer list-none">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs">{decision.merchant_ref}</span>
-                    <span className={`rounded-full px-2 py-1 text-[11px] ${decision.final_status === "good_transaction" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
-                      {decision.final_status === "good_transaction" ? "good" : "doubtful"}
-                    </span>
-                  </div>
-                </summary>
-
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <div className="rounded-md border p-3 text-xs">
-                    <p className="font-medium">Trinity (3-Way) Check</p>
-                    <p className="mt-1 text-muted-foreground">Presence: {String(threeWay.presence_check ?? "n/a")}</p>
-                    <p className="text-muted-foreground">Amount consistency: {String(threeWay.amount_check ?? "n/a")}</p>
-                    <p className="text-muted-foreground">Identity consistency: {String(threeWay.identity_check ?? "n/a")}</p>
-                  </div>
-
-                  <div className="rounded-md border p-3 text-xs">
-                    <p className="font-medium">Exact Hash</p>
-                    <p className="mt-1 text-muted-foreground">Matched: {String(exact.matched ?? decision.stage_results.exact_hash)}</p>
-                    <p className="text-muted-foreground">Hash samples: {JSON.stringify((exact.hashes || {}) as Record<string, unknown>)}</p>
-                  </div>
-
-                  <div className="rounded-md border p-3 text-xs">
-                    <p className="font-medium">Fuzzy Logic</p>
-                    <p className="mt-1 text-muted-foreground">Score: {decision.fuzzy_score == null ? "n/a" : decision.fuzzy_score.toFixed(2)}</p>
-                    <p className="text-muted-foreground">Threshold: {String(fuzzy.threshold ?? "0.90")}</p>
-                    <p className="text-muted-foreground">Pair scores: {JSON.stringify((fuzzy.pair_scores || {}) as Record<string, unknown>)}</p>
-                  </div>
-
-                  <div className="rounded-md border p-3 text-xs">
-                    <p className="font-medium">Backdated + FX</p>
-                    <p className="mt-1 text-muted-foreground">Backdated max gap: {decision.backdated_gap_days == null ? "n/a" : `${decision.backdated_gap_days} day(s)`}</p>
-                    <p className="text-muted-foreground">Gap details: {JSON.stringify((backdated.pair_gaps_days || {}) as Record<string, unknown>)}</p>
-                    <p className="text-muted-foreground">FX handling: {String(fx.detail ?? decision.fx_detail ?? "n/a")}</p>
-                  </div>
-                </div>
-
-                <div className="mt-3 rounded-md border p-3 text-xs">
-                  <p className="font-medium">AI Handling Trace</p>
-                  {reviews.length === 0 ? <p className="mt-1 text-muted-foreground">No AI exception review required/available for this transaction.</p> : null}
-                  <div className="mt-2 space-y-2">
-                    {reviews.map((review) => (
-                      <div key={`${decision.merchant_ref}-${review.stage}`} className="rounded border p-2">
-                        <p className="font-medium">{review.stage} ({Math.round(review.confidence * 100)}%)</p>
-                        <p className="mt-1 text-muted-foreground">{JSON.stringify(review.output_json)}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </details>
-            );
-          })}
-        </div>
-      </section>
-
     </PageShell>
   );
 }

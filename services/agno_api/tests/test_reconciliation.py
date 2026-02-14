@@ -7,7 +7,7 @@ import pandas as pd
 from app.reconciliation import reconcile
 
 
-DATASET_DIR = Path("/Users/skyjuice/Downloads/Dataset-1/scenario 3")
+DATASET_DIR = Path(__file__).resolve().parents[3] / "sample_data" / "scenario3"
 
 
 def test_scenario3_counts_and_refs() -> None:

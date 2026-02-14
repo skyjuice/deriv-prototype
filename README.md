@@ -60,11 +60,26 @@ docker compose -f infra/docker-compose.yml up -d
 - API: `http://localhost:8001/health`
 - PocketBase: `http://localhost:8090`
 
+## PocketBase Login (Local)
+
+This repo does not hardcode a PocketBase admin username/password in `docker-compose` or `.env`.
+
+Use this flow:
+1. Open `http://localhost:8090/_/`
+2. On first run, create the first PocketBase superuser account
+3. Login with that account afterwards (credentials persist in the Docker volume)
+
+Recommended local dev credentials when creating the first account:
+- Username (email): `admin@local.dev`
+- Password: `Admin123!change`
+
+If you already created an admin before, use your existing credentials.
+
 ## Scenario 3 acceptance
 Dataset used:
-- `/Users/skyjuice/Downloads/Dataset-1/scenario 3/scenario3_internal_10.csv`
-- `/Users/skyjuice/Downloads/Dataset-1/scenario 3/scenario3_erp_10.csv`
-- `/Users/skyjuice/Downloads/Dataset-1/scenario 3/scenario3_psp_10.csv`
+- `sample_data/scenario3/scenario3_internal_10.csv`
+- `sample_data/scenario3/scenario3_erp_10.csv`
+- `sample_data/scenario3/scenario3_psp_10.csv`
 
 Expected reconciliation outcome:
 - `8` good transactions
